@@ -121,7 +121,8 @@ def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
         messages.append(f"Taille page incompatible avec la table ({bed_w}×{bed_h} mm). Envisager un échelle/tiling.")
 
     ok = has_vectors or allow_image_only
-    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok) non installé."], [], False, False, False)
+    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok) non installé."],
+        False, False, False)
 
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
