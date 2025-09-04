@@ -20,6 +20,25 @@ __VERSION__ = "0.4.1"
 
 st.set_page_config(page_title="Vérif PDF – Laser", page_icon="🧪", layout="wide")
 
+# CSS pour effet zoom et néons rouges au survol
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        .zoomable:hover {
+            transform: scale(1.2);
+            box-shadow: 0 0 15px red;
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+inject_css()
+
+st.title("🤖 Chatbot faisabilité – Plans PDF (découpe laser)")
+st.caption("PoC – Analyse basique des plans en PDF pour la découpe laser · v" + __VERSION__)
 
 # --- Styles globaux (hover zoom + néon rouge) ---
 st.markdown(
@@ -67,16 +86,34 @@ class PDFAnalysis:
     has_vectors: bool
     has_text: bool
     bbox_ok: bool
+    perimeter_mm: float = 0.0
 
 
 def mm_from_pt(pt):
     return pt * 25.4 / 72.0
 
 
+def compute_perimeter(drawings) -> float:
+    """Approximate perimeter from vector paths (in mm)."""
+    total = 0.0
+    for d in drawings:
+        for item in d["items"]:
+            if item[0] == "l":  # line segment
+                (x0, y0), (x1, y1) = item[1], item[2]
+                length_pt = math.dist((x0, y0), (x1, y1))
+                total += mm_from_pt(length_pt)
+    return total
+
+
 def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
     messages = []
     if not fitz:
-        return PDFAnalysis(False, ["PyMuPDF (fitz) non installé."], [DFAnalysis(False, [f"Erreur d'ouverture PDF: {e}"], [], False, False, False)
+        return PDFAnalysis(False, ["PyMuPDF (fitz) non installé."], [], False, False, False)
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception as e:
+        return PDFAnalysis(False, [f"Erreur d'ouverture PDF: {e}"], [], False, False, False)
 
     page_sizes_mm = []
     has_vectors = False
@@ -121,8 +158,7 @@ def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
         messages.append(f"Taille page incompatible avec la table ({bed_w}×{bed_h} mm). Envisager un échelle/tiling.")
 
     ok = has_vectors or allow_image_only
-    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok) non installé."],
-        False, False, False)
+    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok) non installé."], [], False, False, False)
 
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -133,6 +169,7 @@ def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
     has_vectors = False
     has_text = False
     bbox_ok = True
+    total_perimeter = 0.0
 
     for i, page in enumerate(doc):
         rect = page.rect  # points
@@ -145,6 +182,7 @@ def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
             draws = page.get_drawings()
             if draws:
                 has_vectors = True
+                total_perimeter += compute_perimeter(draws)
         except Exception:
             pass
 
@@ -172,7 +210,7 @@ def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
         messages.append(f"Taille page incompatible avec la table ({bed_w}×{bed_h} mm). Envisager un échelle/tiling.")
 
     ok = has_vectors or allow_image_only
-    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok)
+    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok, perimeter_mm=total_perimeter)
 
 
 # Simple rule engine (text heuristics)
@@ -217,7 +255,9 @@ def _dist(p0, p1):
     return hypot(p1[0]-p0[0], p1[1]-p0[1])
 
 # Approche générique pour PyMuPDF: on parcourt page.get_drawings() et on somme les longueurs.
-# On estime les courbes de Bézier par ébezier_len(p0, p1, p2, p3, samples=16):
+# On estime les courbes de Bézier par échantillonnage.
+
+def _bezier_len(p0, p1, p2, p3, samples=16):
     # De Casteljau sampling
     def interp(a,b,t):
         return (a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t)
@@ -326,7 +366,31 @@ if uploaded:
         st.metric("Pages", len(analysis.page_sizes_mm))
         st.markdown('</div>', unsafe_allow_html=True)
     with colB:
-        st.markdown('<div class="metric-c  with col1:
+        st.markdown('<div class="metric-card hover-zoom neon-red">', unsafe_allow_html=True)
+        st.metric("Vecteurs détectés", "Oui" if analysis.has_vectors else "Non")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with colC:
+        st.markdown('<div class="metric-card hover-zoom neon-red">', unsafe_allow_html=True)
+        st.metric("Texte détecté", "Oui" if analysis.has_text else "Non")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.write("**Formats page (mm)**")
+    st.dataframe({"page": [p["page"] for p in analysis.page_sizes_mm],
+                  "largeur_mm": [round(p["w_mm"],1) for p in analysis.page_sizes_mm],
+                  "hauteur_mm": [round(p["h_mm"],1) for p in analysis.page_sizes_mm]})
+
+    # --- Périmètres (mm) ---
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        page_perims = [compute_page_perimeters_mm(pg) for pg in doc]
+    except Exception:
+        page_perims = []
+
+    if page_perims:
+        st.subheader("📏 Périmètre à plat (mm) – Estimation")
+        for i, data in enumerate(page_perims, start=1):
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
                 st.markdown('<div class="metric-card hover-zoom neon-red">', unsafe_allow_html=True)
                 st.metric(f"Page {i}", "", help="Résultats pour cette page")
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -347,13 +411,19 @@ if uploaded:
         try:
             # concat text for all pages
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            text_dump = "\n".join((pg.get_text("text") or "").strip() for pg in doc)
+            text_dump = "
+".join((pg.get_text("text") or "").strip() for pg in doc)
             with st.expander("Voir texte extrait"):
-                st.code(text_dump[:5000] + ("\n…" if len(text_dump) > 5000 else ""))
+                st.code(text_dump[:5000] + ("
+…" if len(text_dump) > 5000 else ""))
         except Exception:
             pass
 
-    st.info("\n".join(analysis.messages))
+    st.info("
+".join(analysis.messages))
+
+    # Exemple visuel avec hover + néons rouges
+    st.markdown('<div class="zoomable">🟥 Aperçu interactif du plan (placeholder)</div>', unsafe_allow_html=True)
 
 if st.button("Analyser la faisabilité", disabled=(uploaded is None)):
     if not analysis:
@@ -378,7 +448,6 @@ if st.button("Analyser la faisabilité", disabled=(uploaded is None)):
             score -= 10
             verdict_msgs.append("CO₂ sur >6 mm acier : limites possibles de perçage/qualité.")
 
-        # Text-based checks
         text_findings = []
         if text_dump:
             res = run_rules_on_text(text_dump)
@@ -425,4 +494,4 @@ st.markdown(
 """
 )
 
-st.caption("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streamlit Cloud.")("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streaml
+st.caption("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streamlit Cloud.")("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streamlit Cloud.")
