@@ -102,7 +102,7 @@ def compute_perimeter(drawings) -> float:
                 total += mm_from_pt(length_pt)
     return total
 
-def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only) -> PDFAnalysis:
+def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only, min_hole, min_inner_radius) -> PDFAnalysis:
     messages = []
     if not fitz:
         return PDFAnalysis(False, ["PyMuPDF (fitz) non installé."], [], False, False, False)
@@ -120,20 +120,13 @@ def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only) -> PDFAnalysi
         w_mm = mm_from_pt(rect.width)
         h_mm = mm_from_pt(rect.height)
         page_sizes_mm.append({"page": i+1, "w_mm": w_mm, "h_mm": h_mm})
-        try:
-            draws = page.get_drawings()
-            if draws:
-                has_vectors = True
-                total_perimeter += compute_perimeter(draws)
-        except Exception:
-            pass
-        try:
-            text = page.get_text("text") or ""
-            if text.strip():
-                has_text = True
-        except Exception:
-            pass
-        # Table size vs bed
+        draws = page.get_drawings() if hasattr(page, 'get_drawings') else []
+        if draws:
+            has_vectors = True
+            total_perimeter += compute_perimeter(draws)
+        text = page.get_text("text") or ""
+        if text.strip():
+            has_text = True
         if not ((w_mm <= bed_w and h_mm <= bed_h) or (h_mm <= bed_w and w_mm <= bed_h)):
             bbox_ok = False
     if not has_vectors and not allow_image_only:
@@ -154,7 +147,6 @@ def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only) -> PDFAnalysi
         bbox_ok=bbox_ok,
         perimeter_mm=total_perimeter
     )
-
 # Simple rule engine (text heuristics)
 DIM_RE = re.compile(r"(Ø\s*\d+[\.,]?\d*|R\s*\d+[\.,]?\d*|\d+[\.,]?\d*\s*mm)")
 
