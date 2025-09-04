@@ -102,7 +102,7 @@ def compute_perimeter(drawings) -> float:
                 total += mm_from_pt(length_pt)
     return total
 
-def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only, min_hole, min_inner_radius) -> PDFAnalysis:
+def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only) -> PDFAnalysis:
     messages = []
     if not fitz:
         return PDFAnalysis(False, ["PyMuPDF (fitz) non installé."], [], False, False, False)
@@ -120,13 +120,22 @@ def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only, min_hole, min
         w_mm = mm_from_pt(rect.width)
         h_mm = mm_from_pt(rect.height)
         page_sizes_mm.append({"page": i+1, "w_mm": w_mm, "h_mm": h_mm})
-        draws = page.get_drawings() if hasattr(page, 'get_drawings') else []
-        if draws:
-            has_vectors = True
-            total_perimeter += compute_perimeter(draws)
-        text = page.get_text("text") or ""
-        if text.strip():
-            has_text = True
+        # Detect drawings (vector paths)
+        try:
+            draws = page.get_drawings()
+            if draws:
+                has_vectors = True
+                total_perimeter += compute_perimeter(draws)
+        except Exception:
+            draws = []
+        # Detect text
+        try:
+            text = page.get_text("text") or ""
+            if text.strip():
+                has_text = True
+        except Exception:
+            pass
+        # Table size vs bed (toujours en mm)
         if not ((w_mm <= bed_w and h_mm <= bed_h) or (h_mm <= bed_w and w_mm <= bed_h)):
             bbox_ok = False
     if not has_vectors and not allow_image_only:
@@ -147,6 +156,7 @@ def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only, min_hole, min
         bbox_ok=bbox_ok,
         perimeter_mm=total_perimeter
     )
+
 # Simple rule engine (text heuristics)
 DIM_RE = re.compile(r"(Ø\s*\d+[\.,]?\d*|R\s*\d+[\.,]?\d*|\d+[\.,]?\d*\s*mm)")
 
@@ -193,7 +203,9 @@ def _bezier_len(p0, p1, p2, p3, samples=16):
     return sum(_dist(pts[i], pts[i+1]) for i in range(samples))
 
 def compute_page_perimeters_mm(page) -> Dict[str, Any]:
-    """Retourne périmètres en mm: somme des segments, somme des contours fermés, plus grand contour."""
+    """Retourne périmètres en mm: somme des segments, somme des contours fermés, plus grand contour.
+    Limites: PDF doit être vectoriel; identification des contours via proximité start-end.
+    """
     total_len_pt = 0.0
     closed_loops_len_pt = []
     try:
@@ -210,7 +222,8 @@ def compute_page_perimeters_mm(page) -> Dict[str, Any]:
                 continue
             op = it[0]
             if op == "l":
-                x0,y0,x1,y1 = it[1]
+                x0,y0 = it[1][0], it[1][1]
+                x1,y1 = it[1][2], it[1][3]
                 path_len += _dist((x0,y0),(x1,y1))
                 if start is None:
                     start = (x0,y0)
@@ -326,7 +339,6 @@ if uploaded:
 
     st.info("\n".join(analysis.messages))
 
-    # Exemple visuel avec hover + néons rouges
     st.markdown('<div class="zoomable">🟥 Aperçu interactif du plan (placeholder)</div>', unsafe_allow_html=True)
 
 if st.button("Analyser la faisabilité", disabled=(uploaded is None)):
@@ -364,12 +376,7 @@ if st.button("Analyser la faisabilité", disabled=(uploaded is None)):
 
         st.subheader("Résultat")
         st.metric("Score faisabilité (PoC)", f"{score}/100", help="Score heuristique – à affiner avec des règles métier.")
-        if score >= 70:
-            st.success(status)
-        elif score >= 45:
-            st.warning(status)
-        else:
-            st.error(status)
+        st.success(status) if score >= 70 else st.warning(status) if score >= 45 else st.error(status)
 
         st.write("### Points clés")
         for m in verdict_msgs:
@@ -399,4 +406,8 @@ st.markdown(
 2. **Détection mise à plat vs. vue pliée** : heuristiques (cartouche *FLAT PATTERN*, calques, repères de pli `V-`/`R-`).
 3. **Dépliage (si 3D)** : si STEP/Inventor dispo ➜ calcul BA/BD via K‑factor; sinon exiger la mise à plat fournie.
 4. **Aperçu interactif** : rendu SVG/Canvas des contours avec **zoom au survol + halo néon rouge** élément par élément.
-5.
+5. **Rapport** : export PDF/CSV des périmètres (total, Σ fermés, plus grand contour) et des alertes (mm).
+"""
+)
+
+st.caption("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streamlit Cloud.")
