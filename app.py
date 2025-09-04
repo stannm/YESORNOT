@@ -88,10 +88,8 @@ class PDFAnalysis:
     bbox_ok: bool
     perimeter_mm: float = 0.0
 
-
 def mm_from_pt(pt):
     return pt * 25.4 / 72.0
-
 
 def compute_perimeter(drawings) -> float:
     """Approximate perimeter from vector paths (in mm)."""
@@ -104,80 +102,24 @@ def compute_perimeter(drawings) -> float:
                 total += mm_from_pt(length_pt)
     return total
 
-
-def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
+def analyze_pdf(file_bytes: bytes, bed_w, bed_h, allow_image_only) -> PDFAnalysis:
     messages = []
     if not fitz:
         return PDFAnalysis(False, ["PyMuPDF (fitz) non installé."], [], False, False, False)
-
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
     except Exception as e:
         return PDFAnalysis(False, [f"Erreur d'ouverture PDF: {e}"], [], False, False, False)
-
-    page_sizes_mm = []
-    has_vectors = False
-    has_text = False
-    bbox_ok = True
-
-    for i, page in enumerate(doc):
-        rect = page.rect  # points
-        w_mm = mm_from_pt(rect.width)
-        h_mm = mm_from_pt(rect.height)
-        page_sizes_mm.append({"page": i+1, "w_mm": w_mm, "h_mm": h_mm})
-
-        # Detect drawings (vector paths)
-        try:
-            draws = page.get_drawings()
-            if draws:
-                has_vectors = True
-        except Exception:
-            draws = []
-
-        # Detect text
-        try:
-            text = page.get_text("text") or ""
-            if text.strip():
-                has_text = True
-        except Exception:
-            pass
-
-        # Table size vs bed (toujours en mm)
-        if not ((w_mm <= bed_w and h_mm <= bed_h) or (h_mm <= bed_w and w_mm <= bed_h)):
-            bbox_ok = False
-
-    if not has_vectors and not allow_image_only:
-        messages.append("Le PDF ne contient pas de tracés vectoriels détectables (probable scan). Fournir un export vectoriel (DXF/SVG/PDF vectoriel).")
-
-    if has_text:
-        messages.append("Texte détecté – je peux tenter d'extraire cotes / annotations (mm).")
-    else:
-        messages.append("Aucun texte détecté.")
-
-    if not bbox_ok:
-        messages.append(f"Taille page incompatible avec la table ({bed_w}×{bed_h} mm). Envisager un échelle/tiling.")
-
-    ok = has_vectors or allow_image_only
-    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok) non installé."], [], False, False, False)
-
-    try:
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-    except Exception as e:
-        return PDFAnalysis(False, [f"Erreur d'ouverture PDF: {e}"], [], False, False, False)
-
     page_sizes_mm = []
     has_vectors = False
     has_text = False
     bbox_ok = True
     total_perimeter = 0.0
-
     for i, page in enumerate(doc):
-        rect = page.rect  # points
+        rect = page.rect
         w_mm = mm_from_pt(rect.width)
         h_mm = mm_from_pt(rect.height)
         page_sizes_mm.append({"page": i+1, "w_mm": w_mm, "h_mm": h_mm})
-
-        # Detect drawings (vector paths)
         try:
             draws = page.get_drawings()
             if draws:
@@ -185,37 +127,36 @@ def analyze_pdf(file_bytes: bytes) -> PDFAnalysis:
                 total_perimeter += compute_perimeter(draws)
         except Exception:
             pass
-
-        # Detect text
         try:
             text = page.get_text("text") or ""
             if text.strip():
                 has_text = True
         except Exception:
             pass
-
         # Table size vs bed
         if not ((w_mm <= bed_w and h_mm <= bed_h) or (h_mm <= bed_w and w_mm <= bed_h)):
             bbox_ok = False
-
     if not has_vectors and not allow_image_only:
         messages.append("Le PDF ne contient pas de tracés vectoriels détectables (probable scan). Fournir un export vectoriel (DXF/SVG/PDF vectoriel).")
-
     if has_text:
-        messages.append("Texte détecté – je peux tenter d'extraire cotes / annotations.")
+        messages.append("Texte détecté – je peux tenter d'extraire cotes / annotations (mm).")
     else:
         messages.append("Aucun texte détecté.")
-
     if not bbox_ok:
         messages.append(f"Taille page incompatible avec la table ({bed_w}×{bed_h} mm). Envisager un échelle/tiling.")
-
     ok = has_vectors or allow_image_only
-    return PDFAnalysis(ok=ok, messages=messages, page_sizes_mm=page_sizes_mm, has_vectors=has_vectors, has_text=has_text, bbox_ok=bbox_ok, perimeter_mm=total_perimeter)
-
+    return PDFAnalysis(
+        ok=ok,
+        messages=messages,
+        page_sizes_mm=page_sizes_mm,
+        has_vectors=has_vectors,
+        has_text=has_text,
+        bbox_ok=bbox_ok,
+        perimeter_mm=total_perimeter
+    )
 
 # Simple rule engine (text heuristics)
 DIM_RE = re.compile(r"(Ø\s*\d+[\.,]?\d*|R\s*\d+[\.,]?\d*|\d+[\.,]?\d*\s*mm)")
-
 
 def extract_numeric_values_as_mm(text: str) -> List[float]:
     vals = []
@@ -226,36 +167,27 @@ def extract_numeric_values_as_mm(text: str) -> List[float]:
             pass
     return vals
 
-
-def run_rules_on_text(text: str) -> Dict[str, Any]:
+def run_rules_on_text(text: str, min_hole, min_inner_radius) -> Dict[str, Any]:
     findings = []
     dims = DIM_RE.findall(text)
     nums = extract_numeric_values_as_mm(text)
-
     if dims:
         findings.append(f"Repères dimensionnels repérés: {', '.join(dims[:10])}{' …' if len(dims)>10 else ''}")
-
     # Heuristic: look for very petits Ø (< min_hole)
     small_values = [v for v in nums if v < min_hole]
     if small_values:
         findings.append(f"⚠️ Valeurs inférieures au Ø mini ({min_hole} mm) détectées: ex. {small_values[:5]}")
-
     # Heuristic for rayon intérieur
     inner_r = [v for v in nums if v < min_inner_radius]
     if inner_r:
         findings.append(f"⚠️ Rayons < rayon intérieur mini ({min_inner_radius} mm) détectés: ex. {inner_r[:5]}")
-
     return {"findings": findings}
-
 
 # --- Utilitaires géométrie (périmètre à plat des contours fermés) ---
 from math import hypot
 
 def _dist(p0, p1):
     return hypot(p1[0]-p0[0], p1[1]-p0[1])
-
-# Approche générique pour PyMuPDF: on parcourt page.get_drawings() et on somme les longueurs.
-# On estime les courbes de Bézier par échantillonnage.
 
 def _bezier_len(p0, p1, p2, p3, samples=16):
     # De Casteljau sampling
@@ -268,53 +200,42 @@ def _bezier_len(p0, p1, p2, p3, samples=16):
     pts = [bez(i/samples) for i in range(samples+1)]
     return sum(_dist(pts[i], pts[i+1]) for i in range(samples))
 
-
 def compute_page_perimeters_mm(page) -> Dict[str, Any]:
-    """Retourne périmètres en mm: somme des segments, somme des contours fermés, plus grand contour.
-    Limites: PDF doit être vectoriel; identification des contours via proximité start-end.
-    """
+    """Retourne périmètres en mm: somme des segments, somme des contours fermés, plus grand contour."""
     total_len_pt = 0.0
     closed_loops_len_pt = []
-
     try:
         drawings = page.get_drawings()
     except Exception:
         drawings = []
-
     for d in drawings:
-        # Chaque d["items"] est une séquence d'éléments: (op, points, ...)
         items = d.get("items", [])
         path_len = 0.0
         start = None
         last = None
-
         for it in items:
             if not it:
                 continue
             op = it[0]
             if op == "l":
-                # line: it[1] = (x0,y0,x1,y1)
                 x0,y0,x1,y1 = it[1]
                 path_len += _dist((x0,y0),(x1,y1))
                 if start is None:
                     start = (x0,y0)
                 last = (x1,y1)
             elif op == "c":
-                # cubic bezier: it[1] = (x0,y0,x1,y1,x2,y2,x3,y3)
                 x0,y0,x1,y1,x2,y2,x3,y3 = it[1]
                 path_len += _bezier_len((x0,y0),(x1,y1),(x2,y2),(x3,y3))
                 if start is None:
                     start = (x0,y0)
                 last = (x3,y3)
             elif op == "re":
-                # rectangle: it[1] = (x,y,w,h)
                 x,y,w,h = it[1]
                 path_len += 2.0*(abs(w)+abs(h))
                 if start is None:
                     start = (x,y)
                 last = (x,y)
             elif op == "m":
-                # move to (nouveau sous-chemin): clôture l'actuel
                 if start is not None and last is not None:
                     if _dist(start,last) < 1e-3:
                         closed_loops_len_pt.append(path_len)
@@ -323,7 +244,6 @@ def compute_page_perimeters_mm(page) -> Dict[str, Any]:
                 start = (it[1][0], it[1][1])
                 last = start
             elif op == "h":
-                # close path
                 if start is not None and last is not None:
                     path_len += _dist(last, start)
                     closed_loops_len_pt.append(path_len)
@@ -331,17 +251,13 @@ def compute_page_perimeters_mm(page) -> Dict[str, Any]:
                     path_len = 0.0
                     start = None
                     last = None
-        # fin items -> accumulate
         if path_len > 0.0:
             total_len_pt += path_len
             if start is not None and last is not None and _dist(start,last) < 1e-3:
                 closed_loops_len_pt.append(path_len)
-
-    # Conversion points ➜ mm
     total_len_mm = mm_from_pt(total_len_pt)
     closed_loops_mm = [mm_from_pt(v) for v in closed_loops_len_pt]
     largest_loop_mm = max(closed_loops_mm) if closed_loops_mm else 0.0
-
     return {
         "total_path_mm": total_len_mm,
         "sum_closed_mm": sum(closed_loops_mm),
@@ -358,7 +274,7 @@ text_dump = ""
 
 if uploaded:
     file_bytes = uploaded.read()
-    analysis = analyze_pdf(file_bytes)
+    analysis = analyze_pdf(file_bytes, bed_w, bed_h, allow_image_only)
 
     colA, colB, colC = st.columns(3)
     with colA:
@@ -409,18 +325,14 @@ if uploaded:
 
     if fitz and analysis.has_text:
         try:
-            # concat text for all pages
             doc = fitz.open(stream=file_bytes, filetype="pdf")
-            text_dump = "
-".join((pg.get_text("text") or "").strip() for pg in doc)
+            text_dump = "\n".join((pg.get_text("text") or "").strip() for pg in doc)
             with st.expander("Voir texte extrait"):
-                st.code(text_dump[:5000] + ("
-…" if len(text_dump) > 5000 else ""))
+                st.code(text_dump[:5000] + ("\n…" if len(text_dump) > 5000 else ""))
         except Exception:
             pass
 
-    st.info("
-".join(analysis.messages))
+    st.info("\n".join(analysis.messages))
 
     # Exemple visuel avec hover + néons rouges
     st.markdown('<div class="zoomable">🟥 Aperçu interactif du plan (placeholder)</div>', unsafe_allow_html=True)
@@ -450,7 +362,7 @@ if st.button("Analyser la faisabilité", disabled=(uploaded is None)):
 
         text_findings = []
         if text_dump:
-            res = run_rules_on_text(text_dump)
+            res = run_rules_on_text(text_dump, min_hole, min_inner_radius)
             text_findings = res["findings"]
             if any(f.startswith("⚠️") for f in text_findings):
                 score -= 10
@@ -460,7 +372,12 @@ if st.button("Analyser la faisabilité", disabled=(uploaded is None)):
 
         st.subheader("Résultat")
         st.metric("Score faisabilité (PoC)", f"{score}/100", help="Score heuristique – à affiner avec des règles métier.")
-        st.success(status) if score >= 70 else st.warning(status) if score >= 45 else st.error(status)
+        if score >= 70:
+            st.success(status)
+        elif score >= 45:
+            st.warning(status)
+        else:
+            st.error(status)
 
         st.write("### Points clés")
         for m in verdict_msgs:
@@ -490,8 +407,4 @@ st.markdown(
 2. **Détection mise à plat vs. vue pliée** : heuristiques (cartouche *FLAT PATTERN*, calques, repères de pli `V-`/`R-`).
 3. **Dépliage (si 3D)** : si STEP/Inventor dispo ➜ calcul BA/BD via K‑factor; sinon exiger la mise à plat fournie.
 4. **Aperçu interactif** : rendu SVG/Canvas des contours avec **zoom au survol + halo néon rouge** élément par élément.
-5. **Rapport** : export PDF/CSV des périmètres (total, Σ fermés, plus grand contour) et des alertes (mm).
-"""
-)
-
-st.caption("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streamlit Cloud.")("© PoC éducatif – adapté à la découpe laser tôle. Parfait pour une v1 hébergée sur Streamlit Cloud.")
+5.
